@@ -1,11 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
 * Simple driver for Texas Instruments LM3639 Backlight + Flash LED driver chip
 * Copyright (C) 2012 Texas Instruments
-*
-* This program is free software; you can redistribute it and/or modify
-* it under the terms of the GNU General Public License version 2 as
-* published by the Free Software Foundation.
-*
 */
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -254,7 +250,6 @@ static void lm3639_torch_brightness_set(struct led_classdev *cdev,
 	return;
 out:
 	dev_err(pchip->dev, "i2c failed to access register\n");
-	return;
 }
 
 /* flash */
@@ -293,7 +288,6 @@ static void lm3639_flash_brightness_set(struct led_classdev *cdev,
 	return;
 out:
 	dev_err(pchip->dev, "i2c failed to access register\n");
-	return;
 }
 
 static const struct regmap_config lm3639_regmap = {
@@ -349,8 +343,9 @@ static int lm3639_probe(struct i2c_client *client,
 	props.brightness = pdata->init_brt_led;
 	props.max_brightness = pdata->max_brt_led;
 	pchip->bled =
-	    backlight_device_register("lm3639_bled", pchip->dev, pchip,
-				      &lm3639_bled_ops, &props);
+	    devm_backlight_device_register(pchip->dev, "lm3639_bled",
+					   pchip->dev, pchip, &lm3639_bled_ops,
+					   &props);
 	if (IS_ERR(pchip->bled)) {
 		dev_err(&client->dev, "fail : backlight register\n");
 		ret = PTR_ERR(pchip->bled);
@@ -360,7 +355,7 @@ static int lm3639_probe(struct i2c_client *client,
 	ret = device_create_file(&(pchip->bled->dev), &dev_attr_bled_mode);
 	if (ret < 0) {
 		dev_err(&client->dev, "failed : add sysfs entries\n");
-		goto err_bled_mode;
+		goto err_out;
 	}
 
 	/* flash */
@@ -391,8 +386,6 @@ err_torch:
 	led_classdev_unregister(&pchip->cdev_flash);
 err_flash:
 	device_remove_file(&(pchip->bled->dev), &dev_attr_bled_mode);
-err_bled_mode:
-	backlight_device_unregister(pchip->bled);
 err_out:
 	return ret;
 }
@@ -403,14 +396,10 @@ static int lm3639_remove(struct i2c_client *client)
 
 	regmap_write(pchip->regmap, REG_ENABLE, 0x00);
 
-	if (&pchip->cdev_torch)
-		led_classdev_unregister(&pchip->cdev_torch);
-	if (&pchip->cdev_flash)
-		led_classdev_unregister(&pchip->cdev_flash);
-	if (pchip->bled) {
+	led_classdev_unregister(&pchip->cdev_torch);
+	led_classdev_unregister(&pchip->cdev_flash);
+	if (pchip->bled)
 		device_remove_file(&(pchip->bled->dev), &dev_attr_bled_mode);
-		backlight_device_unregister(pchip->bled);
-	}
 	return 0;
 }
 
@@ -432,6 +421,6 @@ static struct i2c_driver lm3639_i2c_driver = {
 module_i2c_driver(lm3639_i2c_driver);
 
 MODULE_DESCRIPTION("Texas Instruments Backlight+Flash LED driver for LM3639");
-MODULE_AUTHOR("Daniel Jeong <daniel.jeong@ti.com>");
-MODULE_AUTHOR("G.Shark Jeong <gshark.jeong@gmail.com>");
+MODULE_AUTHOR("Daniel Jeong <gshark.jeong@gmail.com>");
+MODULE_AUTHOR("Ldd Mlp <ldd-mlp@list.ti.com>");
 MODULE_LICENSE("GPL v2");

@@ -24,16 +24,18 @@
  *	Eric Anholt <eric@anholt.net>
  */
 
+#include <linux/delay.h>
 #include <linux/i2c.h>
-#include <drm/drmP.h>
+#include <linux/pm_runtime.h>
 
+#include <drm/drm_simple_kms_helper.h>
+
+#include "cdv_device.h"
 #include "intel_bios.h"
+#include "power.h"
 #include "psb_drv.h"
 #include "psb_intel_drv.h"
 #include "psb_intel_reg.h"
-#include "power.h"
-#include "cdv_device.h"
-#include <linux/pm_runtime.h>
 
 
 static void cdv_intel_crt_dpms(struct drm_encoder *encoder, int mode)
@@ -64,7 +66,7 @@ static void cdv_intel_crt_dpms(struct drm_encoder *encoder, int mode)
 	REG_WRITE(reg, temp);
 }
 
-static int cdv_intel_crt_mode_valid(struct drm_connector *connector,
+static enum drm_mode_status cdv_intel_crt_mode_valid(struct drm_connector *connector,
 				struct drm_display_mode *mode)
 {
 	if (mode->flags & DRM_MODE_FLAG_DBLSCAN)
@@ -79,13 +81,6 @@ static int cdv_intel_crt_mode_valid(struct drm_connector *connector,
 		return MODE_CLOCK_HIGH;
 
 	return MODE_OK;
-}
-
-static bool cdv_intel_crt_mode_fixup(struct drm_encoder *encoder,
-				 const struct drm_display_mode *mode,
-				 struct drm_display_mode *adjusted_mode)
-{
-	return true;
 }
 
 static void cdv_intel_crt_mode_set(struct drm_encoder *encoder,
@@ -132,7 +127,7 @@ static void cdv_intel_crt_mode_set(struct drm_encoder *encoder,
 }
 
 
-/**
+/*
  * Uses CRT_HOTPLUG_EN and CRT_HOTPLUG_STAT to detect CRT presence.
  *
  * \return true if CRT is connected.
@@ -199,7 +194,7 @@ static void cdv_intel_crt_destroy(struct drm_connector *connector)
 	struct gma_encoder *gma_encoder = gma_attached_encoder(connector);
 
 	psb_intel_i2c_destroy(gma_encoder->ddc_bus);
-	drm_sysfs_connector_remove(connector);
+	drm_connector_unregister(connector);
 	drm_connector_cleanup(connector);
 	kfree(connector);
 }
@@ -224,7 +219,6 @@ static int cdv_intel_crt_set_property(struct drm_connector *connector,
 
 static const struct drm_encoder_helper_funcs cdv_intel_crt_helper_funcs = {
 	.dpms = cdv_intel_crt_dpms,
-	.mode_fixup = cdv_intel_crt_mode_fixup,
 	.prepare = gma_encoder_prepare,
 	.commit = gma_encoder_commit,
 	.mode_set = cdv_intel_crt_mode_set,
@@ -245,15 +239,6 @@ static const struct drm_connector_helper_funcs
 	.best_encoder = gma_best_encoder,
 };
 
-static void cdv_intel_crt_enc_destroy(struct drm_encoder *encoder)
-{
-	drm_encoder_cleanup(encoder);
-}
-
-static const struct drm_encoder_funcs cdv_intel_crt_enc_funcs = {
-	.destroy = cdv_intel_crt_enc_destroy,
-};
-
 void cdv_intel_crt_init(struct drm_device *dev,
 			struct psb_intel_mode_device *mode_dev)
 {
@@ -262,8 +247,6 @@ void cdv_intel_crt_init(struct drm_device *dev,
 	struct gma_encoder *gma_encoder;
 	struct drm_connector *connector;
 	struct drm_encoder *encoder;
-
-	u32 i2c_reg;
 
 	gma_encoder = kzalloc(sizeof(struct gma_encoder), GFP_KERNEL);
 	if (!gma_encoder)
@@ -279,31 +262,18 @@ void cdv_intel_crt_init(struct drm_device *dev,
 		&cdv_intel_crt_connector_funcs, DRM_MODE_CONNECTOR_VGA);
 
 	encoder = &gma_encoder->base;
-	drm_encoder_init(dev, encoder,
-		&cdv_intel_crt_enc_funcs, DRM_MODE_ENCODER_DAC);
+	drm_simple_encoder_init(dev, encoder, DRM_MODE_ENCODER_DAC);
 
 	gma_connector_attach_encoder(gma_connector, gma_encoder);
 
 	/* Set up the DDC bus. */
-	i2c_reg = GPIOA;
-	/* Remove the following code for CDV */
-	/*
-	if (dev_priv->crt_ddc_bus != 0)
-		i2c_reg = dev_priv->crt_ddc_bus;
-	}*/
-	gma_encoder->ddc_bus = psb_intel_i2c_create(dev,
-							  i2c_reg, "CRTDDC_A");
+	gma_encoder->ddc_bus = psb_intel_i2c_create(dev, GPIOA, "CRTDDC_A");
 	if (!gma_encoder->ddc_bus) {
-		dev_printk(KERN_ERR, &dev->pdev->dev, "DDC bus registration "
-			   "failed.\n");
+		dev_printk(KERN_ERR, dev->dev, "DDC bus registration failed.\n");
 		goto failed_ddc;
 	}
 
 	gma_encoder->type = INTEL_OUTPUT_ANALOG;
-	/*
-	psb_intel_output->clone_mask = (1 << INTEL_ANALOG_CLONE_BIT);
-	psb_intel_output->crtc_mask = (1 << 0) | (1 << 1);
-	*/
 	connector->interlace_allowed = 0;
 	connector->doublescan_allowed = 0;
 
@@ -311,7 +281,7 @@ void cdv_intel_crt_init(struct drm_device *dev,
 	drm_connector_helper_add(connector,
 					&cdv_intel_crt_connector_helper_funcs);
 
-	drm_sysfs_connector_add(connector);
+	drm_connector_register(connector);
 
 	return;
 failed_ddc:

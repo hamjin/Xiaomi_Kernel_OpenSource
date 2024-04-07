@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * tegra20_ac97.c - Tegra20 AC97 platform driver
  *
@@ -6,16 +7,6 @@
  * Partly based on code copyright/by:
  *
  * Copyright (c) 2011,2012 Toradex Inc.
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms of the GNU General Public License
- * version 2 as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful, but
- * WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
  */
 
 #include <linux/clk.h>
@@ -30,6 +21,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
+#include <linux/reset.h>
 #include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -37,7 +29,6 @@
 #include <sound/soc.h>
 #include <sound/dmaengine_pcm.h>
 
-#include "tegra_asoc_utils.h"
 #include "tegra20_ac97.h"
 
 #define DRV_NAME "tegra20-ac97"
@@ -229,7 +220,6 @@ static int tegra20_ac97_probe(struct snd_soc_dai *dai)
 
 static struct snd_soc_dai_driver tegra20_ac97_dai = {
 	.name = "tegra-ac97-pcm",
-	.ac97_control = 1,
 	.probe = tegra20_ac97_probe,
 	.playback = {
 		.stream_name = "PCM Playback",
@@ -306,7 +296,7 @@ static const struct regmap_config tegra20_ac97_regmap_config = {
 	.readable_reg = tegra20_ac97_wr_rd_reg,
 	.volatile_reg = tegra20_ac97_volatile_reg,
 	.precious_reg = tegra20_ac97_precious_reg,
-	.cache_type = REGCACHE_RBTREE,
+	.cache_type = REGCACHE_FLAT,
 };
 
 static int tegra20_ac97_platform_probe(struct platform_device *pdev)
@@ -319,11 +309,16 @@ static int tegra20_ac97_platform_probe(struct platform_device *pdev)
 	ac97 = devm_kzalloc(&pdev->dev, sizeof(struct tegra20_ac97),
 			    GFP_KERNEL);
 	if (!ac97) {
-		dev_err(&pdev->dev, "Can't allocate tegra20_ac97\n");
 		ret = -ENOMEM;
 		goto err;
 	}
 	dev_set_drvdata(&pdev->dev, ac97);
+
+	ac97->reset = devm_reset_control_get_exclusive(&pdev->dev, "ac97");
+	if (IS_ERR(ac97->reset)) {
+		dev_err(&pdev->dev, "Can't retrieve ac97 reset\n");
+		return PTR_ERR(ac97->reset);
+	}
 
 	ac97->clk_ac97 = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(ac97->clk_ac97)) {
@@ -376,18 +371,24 @@ static int tegra20_ac97_platform_probe(struct platform_device *pdev)
 	ac97->playback_dma_data.addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 	ac97->playback_dma_data.maxburst = 4;
 
-	ret = tegra_asoc_utils_init(&ac97->util_data, &pdev->dev);
-	if (ret)
+	ret = reset_control_assert(ac97->reset);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to assert AC'97 reset: %d\n", ret);
 		goto err_clk_put;
-
-	ret = tegra_asoc_utils_set_ac97_rate(&ac97->util_data);
-	if (ret)
-		goto err_asoc_utils_fini;
+	}
 
 	ret = clk_prepare_enable(ac97->clk_ac97);
 	if (ret) {
 		dev_err(&pdev->dev, "clk_enable failed: %d\n", ret);
-		goto err_asoc_utils_fini;
+		goto err_clk_put;
+	}
+
+	usleep_range(10, 100);
+
+	ret = reset_control_deassert(ac97->reset);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to deassert AC'97 reset: %d\n", ret);
+		goto err_clk_disable_unprepare;
 	}
 
 	ret = snd_soc_set_ac97_ops(&tegra20_ac97_ops);
@@ -419,8 +420,6 @@ err_unregister_component:
 	snd_soc_unregister_component(&pdev->dev);
 err_clk_disable_unprepare:
 	clk_disable_unprepare(ac97->clk_ac97);
-err_asoc_utils_fini:
-	tegra_asoc_utils_fini(&ac97->util_data);
 err_clk_put:
 err:
 	snd_soc_set_ac97_ops(NULL);
@@ -433,8 +432,6 @@ static int tegra20_ac97_platform_remove(struct platform_device *pdev)
 
 	tegra_pcm_platform_unregister(&pdev->dev);
 	snd_soc_unregister_component(&pdev->dev);
-
-	tegra_asoc_utils_fini(&ac97->util_data);
 
 	clk_disable_unprepare(ac97->clk_ac97);
 
@@ -451,7 +448,6 @@ static const struct of_device_id tegra20_ac97_of_match[] = {
 static struct platform_driver tegra20_ac97_driver = {
 	.driver = {
 		.name = DRV_NAME,
-		.owner = THIS_MODULE,
 		.of_match_table = tegra20_ac97_of_match,
 	},
 	.probe = tegra20_ac97_platform_probe,

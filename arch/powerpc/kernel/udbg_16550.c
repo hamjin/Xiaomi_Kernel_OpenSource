@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * udbg for NS16550 compatible serial ports
  *
  * Copyright (C) 2001-2005 PPC 64 Team, IBM Corp
- *
- *      This program is free software; you can redistribute it and/or
- *      modify it under the terms of the GNU General Public License
- *      as published by the Free Software Foundation; either version
- *      2 of the License, or (at your option) any later version.
  */
 #include <linux/types.h>
 #include <asm/udbg.h>
@@ -69,8 +65,12 @@ static void udbg_uart_putc(char c)
 
 static int udbg_uart_getc_poll(void)
 {
-	if (!udbg_uart_in || !(udbg_uart_in(UART_LSR) & LSR_DR))
+	if (!udbg_uart_in)
+		return -1;
+
+	if (!(udbg_uart_in(UART_LSR) & LSR_DR))
 		return udbg_uart_in(UART_RBR);
+
 	return -1;
 }
 
@@ -297,13 +297,41 @@ void __init udbg_init_40x_realmode(void)
 
 #endif /* CONFIG_PPC_EARLY_DEBUG_40x */
 
+#ifdef CONFIG_PPC_EARLY_DEBUG_MICROWATT
 
-#ifdef CONFIG_PPC_EARLY_DEBUG_WSP
+#define UDBG_UART_MW_ADDR	((void __iomem *)0xc0002000)
 
-void __init udbg_init_wsp(void)
+static u8 udbg_uart_in_isa300_rm(unsigned int reg)
 {
-	udbg_uart_init_mmio((void *)WSP_UART_VIRT, 1);
-	udbg_uart_setup(57600, 50000000);
+	uint64_t msr = mfmsr();
+	uint8_t  c;
+
+	mtmsr(msr & ~(MSR_EE|MSR_DR));
+	isync();
+	eieio();
+	c = __raw_rm_readb(UDBG_UART_MW_ADDR + (reg << 2));
+	mtmsr(msr);
+	isync();
+	return c;
 }
 
-#endif /* CONFIG_PPC_EARLY_DEBUG_WSP */
+static void udbg_uart_out_isa300_rm(unsigned int reg, u8 val)
+{
+	uint64_t msr = mfmsr();
+
+	mtmsr(msr & ~(MSR_EE|MSR_DR));
+	isync();
+	eieio();
+	__raw_rm_writeb(val, UDBG_UART_MW_ADDR + (reg << 2));
+	mtmsr(msr);
+	isync();
+}
+
+void __init udbg_init_debug_microwatt(void)
+{
+	udbg_uart_in = udbg_uart_in_isa300_rm;
+	udbg_uart_out = udbg_uart_out_isa300_rm;
+	udbg_use_uart();
+}
+
+#endif /* CONFIG_PPC_EARLY_DEBUG_MICROWATT */

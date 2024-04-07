@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NET_DN_H
 #define _NET_DN_H
 
@@ -122,13 +123,6 @@ struct dn_scp                                   /* Session Control Port */
 	unsigned long keepalive;
 	void (*keepalive_fxn)(struct sock *sk);
 
-	/*
-	 * This stuff is for the fast timer for delayed acks
-	 */
-	struct timer_list delack_timer;
-	int delack_pending;
-	void (*delack_fxn)(struct sock *sk);
-
 };
 
 static inline struct dn_scp *DN_SK(struct sock *sk)
@@ -200,6 +194,8 @@ static inline void dn_sk_ports_copy(struct flowidn *fld, struct dn_scp *scp)
 }
 
 unsigned int dn_mss_from_pmtu(struct net_device *dev, int mtu);
+void dn_register_sysctl(void);
+void dn_unregister_sysctl(void);
 
 #define DN_MENUVER_ACC 0x01
 #define DN_MENUVER_USR 0x02

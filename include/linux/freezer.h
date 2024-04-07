@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /* Freezer declarations */
 
 #ifndef FREEZER_H_INCLUDED
@@ -7,6 +8,9 @@
 #include <linux/sched.h>
 #include <linux/wait.h>
 #include <linux/atomic.h>
+#if defined(CONFIG_ARM64) && !defined(__GENKSYMS__)
+#include <linux/mmu_context.h>
+#endif
 
 #ifdef CONFIG_FREEZER
 extern atomic_t system_freezing_cnt;	/* nr of freezing conds in effect */
@@ -24,6 +28,11 @@ extern unsigned int freeze_timeout_msecs;
 static inline bool frozen(struct task_struct *p)
 {
 	return p->flags & PF_FROZEN;
+}
+
+static inline bool frozen_or_skipped(struct task_struct *p)
+{
+	return p->flags & (PF_FROZEN | PF_FREEZER_SKIP);
 }
 
 extern bool freezing_slow_path(struct task_struct *p);
@@ -102,10 +111,15 @@ static inline bool cgroup_freezing(struct task_struct *task)
  * The caller shouldn't do anything which isn't allowed for a frozen task
  * until freezer_cont() is called.  Usually, freezer[_do_not]_count() pair
  * wrap a scheduling operation and nothing much else.
+ *
+ * The write to current->flags uses release semantics to prevent a concurrent
+ * freezer_should_skip() from observing this write before a write to on_rq
+ * during a prior call to activate_task(), which may cause it to return true
+ * before deactivate_task() is called.
  */
 static inline void freezer_do_not_count(void)
 {
-	current->flags |= PF_FREEZER_SKIP;
+	smp_store_release(&current->flags, current->flags | PF_FREEZER_SKIP);
 }
 
 /**
@@ -155,7 +169,19 @@ static inline bool freezer_should_skip(struct task_struct *p)
 	 * clearing %PF_FREEZER_SKIP.
 	 */
 	smp_mb();
+#ifdef CONFIG_ARM64
+	return (p->flags & PF_FREEZER_SKIP) &&
+	       (!p->on_rq || task_cpu_possible_mask(p) == cpu_possible_mask);
+#else
+	/*
+	 * On non-aarch64, avoid depending on task_cpu_possible_mask(), which is
+	 * defined in <linux/mmu_context.h>, because including that header from
+	 * here exposes a tricky bug in the tracepoint headers on x86, and that
+	 * macro would end up being defined equal to cpu_possible_mask on other
+	 * architectures anyway.
+	 */
 	return p->flags & PF_FREEZER_SKIP;
+#endif
 }
 
 /*
@@ -181,7 +207,7 @@ static inline void freezable_schedule_unsafe(void)
 }
 
 /*
- * Like freezable_schedule_timeout(), but should not block the freezer.  Do not
+ * Like schedule_timeout(), but should not block the freezer.  Do not
  * call this with locks held.
  */
 static inline long freezable_schedule_timeout(long timeout)
@@ -203,6 +229,17 @@ static inline long freezable_schedule_timeout_interruptible(long timeout)
 	freezer_do_not_count();
 	__retval = schedule_timeout_interruptible(timeout);
 	freezer_count();
+	return __retval;
+}
+
+/* DO NOT ADD ANY NEW CALLERS OF THIS FUNCTION */
+static inline long freezable_schedule_timeout_interruptible_unsafe(long timeout)
+{
+	long __retval;
+
+	freezer_do_not_count();
+	__retval = schedule_timeout_interruptible(timeout);
+	freezer_count_unsafe();
 	return __retval;
 }
 
@@ -231,7 +268,7 @@ static inline long freezable_schedule_timeout_killable_unsafe(long timeout)
  * call this with locks held.
  */
 static inline int freezable_schedule_hrtimeout_range(ktime_t *expires,
-		unsigned long delta, const enum hrtimer_mode mode)
+		u64 delta, const enum hrtimer_mode mode)
 {
 	int __retval;
 	freezer_do_not_count();
@@ -246,15 +283,6 @@ static inline int freezable_schedule_hrtimeout_range(ktime_t *expires,
  * defined in <linux/wait.h>
  */
 
-#define wait_event_freezekillable(wq, condition)			\
-({									\
-	int __retval;							\
-	freezer_do_not_count();						\
-	__retval = wait_event_killable(wq, (condition));		\
-	freezer_count();						\
-	__retval;							\
-})
-
 /* DO NOT ADD ANY NEW CALLERS OF THIS FUNCTION */
 #define wait_event_freezekillable_unsafe(wq, condition)			\
 ({									\
@@ -265,37 +293,9 @@ static inline int freezable_schedule_hrtimeout_range(ktime_t *expires,
 	__retval;							\
 })
 
-#define wait_event_freezable(wq, condition)				\
-({									\
-	int __retval;							\
-	freezer_do_not_count();						\
-	__retval = wait_event_interruptible(wq, (condition));		\
-	freezer_count();						\
-	__retval;							\
-})
-
-#define wait_event_freezable_timeout(wq, condition, timeout)		\
-({									\
-	long __retval = timeout;					\
-	freezer_do_not_count();						\
-	__retval = wait_event_interruptible_timeout(wq,	(condition),	\
-				__retval);				\
-	freezer_count();						\
-	__retval;							\
-})
-
-#define wait_event_freezable_exclusive(wq, condition)			\
-({									\
-	int __retval;							\
-	freezer_do_not_count();						\
-	__retval = wait_event_interruptible_exclusive(wq, condition);	\
-	freezer_count();						\
-	__retval;							\
-})
-
-
 #else /* !CONFIG_FREEZER */
 static inline bool frozen(struct task_struct *p) { return false; }
+static inline bool frozen_or_skipped(struct task_struct *p) { return false; }
 static inline bool freezing(struct task_struct *p) { return false; }
 static inline void __thaw_task(struct task_struct *t) {}
 
@@ -305,7 +305,6 @@ static inline int freeze_kernel_threads(void) { return -ENOSYS; }
 static inline void thaw_processes(void) {}
 static inline void thaw_kernel_threads(void) {}
 
-static inline bool try_to_freeze_nowarn(void) { return false; }
 static inline bool try_to_freeze(void) { return false; }
 
 static inline void freezer_do_not_count(void) {}
@@ -322,6 +321,9 @@ static inline void set_freezable(void) {}
 #define freezable_schedule_timeout_interruptible(timeout)		\
 	schedule_timeout_interruptible(timeout)
 
+#define freezable_schedule_timeout_interruptible_unsafe(timeout)	\
+	schedule_timeout_interruptible(timeout)
+
 #define freezable_schedule_timeout_killable(timeout)			\
 	schedule_timeout_killable(timeout)
 
@@ -330,18 +332,6 @@ static inline void set_freezable(void) {}
 
 #define freezable_schedule_hrtimeout_range(expires, delta, mode)	\
 	schedule_hrtimeout_range(expires, delta, mode)
-
-#define wait_event_freezable(wq, condition)				\
-		wait_event_interruptible(wq, condition)
-
-#define wait_event_freezable_timeout(wq, condition, timeout)		\
-		wait_event_interruptible_timeout(wq, condition, timeout)
-
-#define wait_event_freezable_exclusive(wq, condition)			\
-		wait_event_interruptible_exclusive(wq, condition)
-
-#define wait_event_freezekillable(wq, condition)		\
-		wait_event_killable(wq, condition)
 
 #define wait_event_freezekillable_unsafe(wq, condition)			\
 		wait_event_killable(wq, condition)

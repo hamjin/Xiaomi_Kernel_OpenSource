@@ -1,10 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Copyright (C) 2008 Marvell International Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -93,7 +89,7 @@ static int setup_freqs_table(struct cpufreq_policy *policy,
 	struct cpufreq_frequency_table *table;
 	int i;
 
-	table = kzalloc((num + 1) * sizeof(*table), GFP_KERNEL);
+	table = kcalloc(num + 1, sizeof(*table), GFP_KERNEL);
 	if (table == NULL)
 		return -ENOMEM;
 
@@ -108,7 +104,9 @@ static int setup_freqs_table(struct cpufreq_policy *policy,
 	pxa3xx_freqs_num = num;
 	pxa3xx_freqs_table = table;
 
-	return cpufreq_table_validate_and_show(policy, table);
+	policy->freq_table = table;
+
+	return 0;
 }
 
 static void __update_core_freq(struct pxa3xx_freq_info *info)
@@ -205,7 +203,6 @@ static struct cpufreq_driver pxa3xx_cpufreq_driver = {
 	.verify		= cpufreq_generic_frequency_table_verify,
 	.target_index	= pxa3xx_cpufreq_set,
 	.init		= pxa3xx_cpufreq_init,
-	.exit		= cpufreq_generic_exit,
 	.get		= pxa3xx_cpufreq_get,
 	.name		= "pxa3xx-cpufreq",
 };

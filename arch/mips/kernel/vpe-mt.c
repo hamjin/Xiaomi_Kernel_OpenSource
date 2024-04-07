@@ -127,9 +127,8 @@ int vpe_run(struct vpe *v)
 	clear_c0_mvpcontrol(MVPCONTROL_VPC);
 
 	/*
-	 * SMTC/SMVP kernels manage VPE enable independently,
-	 * but uniprocessor kernels need to turn it on, even
-	 * if that wasn't the pre-dvpe() state.
+	 * SMVP kernels manage VPE enable independently, but uniprocessor
+	 * kernels need to turn it on, even if that wasn't the pre-dvpe() state.
 	 */
 #ifdef CONFIG_SMP
 	evpe(vpeflags);
@@ -366,8 +365,8 @@ int __init vpe_module_init(void)
 	}
 
 	device_initialize(&vpe_device);
-	vpe_device.class	= &vpe_class,
-	vpe_device.parent	= NULL,
+	vpe_device.class	= &vpe_class;
+	vpe_device.parent	= NULL;
 	dev_set_name(&vpe_device, "vpe1");
 	vpe_device.devt = MKDEV(major, VPE_MODULE_MINOR);
 	err = device_add(&vpe_device);
@@ -454,12 +453,11 @@ int __init vpe_module_init(void)
 
 			settc(tc);
 
-			/* Any TC that is bound to VPE0 gets left as is - in
-			 * case we are running SMTC on VPE0. A TC that is bound
-			 * to any other VPE gets bound to VPE0, ideally I'd like
-			 * to make it homeless but it doesn't appear to let me
-			 * bind a TC to a non-existent VPE. Which is perfectly
-			 * reasonable.
+			/*
+			 * A TC that is bound to any other VPE gets bound to
+			 * VPE0, ideally I'd like to make it homeless but it
+			 * doesn't appear to let me bind a TC to a non-existent
+			 * VPE. Which is perfectly reasonable.
 			 *
 			 * The (un)bound state is visible to an EJTAG probe so
 			 * may notify GDB...
